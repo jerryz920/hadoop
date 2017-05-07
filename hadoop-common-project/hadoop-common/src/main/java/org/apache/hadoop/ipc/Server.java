@@ -359,6 +359,26 @@ public abstract class Server {
     return (call != null ) ? call.getHostInetAddress() : null;
   }
 
+  public static InetAddress getLocalConnectionIp() {
+    Call call = CurCall.get();
+    return (call != null ) ? call.getLocalConnectionAddress() : null;
+  }
+
+  public static String getLocalConnectionAddress() {
+    InetAddress addr = getLocalConnectionIp();
+    return (addr == null) ? null : addr.getHostAddress();
+  }
+
+  public static int getLocalPort() {
+    Call call = CurCall.get();
+    return (call != null ) ? call.getLocalPort() : 0;
+  }
+
+  public static int getRemotePort() {
+    Call call = CurCall.get();
+    return (call != null ) ? call.getRemotePort() : 0;
+  }
+
   /**
    * Returns the clientId from the current RPC request
    */
@@ -729,6 +749,16 @@ public abstract class Server {
       return (addr != null) ? addr.getHostAddress() : null;
     }
 
+    public int getRemotePort() {
+      return 0;
+    }
+    public int getLocalPort() {
+      return 0;
+    }
+    public InetAddress getLocalConnectionAddress() {
+      return null;
+    }
+
     public String getProtocol() {
       return null;
     }
@@ -827,6 +857,21 @@ public abstract class Server {
     @Override
     public InetAddress getHostInetAddress() {
       return connection.getHostInetAddress();
+    }
+
+    @Override
+    public int getRemotePort() {
+      return connection.getRemotePort();
+    }
+
+    @Override
+    public int getLocalPort() {
+      return connection.getLocalPort();
+    }
+
+    @Override
+    public InetAddress getLocalConnectionAddress() {
+      return connection.getLocalConnectionAddress();
     }
 
     @Override
@@ -1519,7 +1564,9 @@ public abstract class Server {
     // disconnected, we can say where it used to connect to.
     private String hostAddress;
     private int remotePort;
+    private int localPort;
     private InetAddress addr;
+    private InetAddress localAddr;
     
     IpcConnectionContextProto connectionContext;
     String protocolName;
@@ -1551,12 +1598,14 @@ public abstract class Server {
       this.unwrappedDataLengthBuffer = ByteBuffer.allocate(4);
       this.socket = channel.socket();
       this.addr = socket.getInetAddress();
+      this.localAddr = socket.getLocalAddress();
       if (addr == null) {
         this.hostAddress = "*Unknown*";
       } else {
         this.hostAddress = addr.getHostAddress();
       }
       this.remotePort = socket.getPort();
+      this.localPort = socket.getLocalPort();
       this.responseQueue = new LinkedList<RpcCall>();
       if (socketSendBufferSize != 0) {
         try {
@@ -1579,6 +1628,18 @@ public abstract class Server {
 
     public InetAddress getHostInetAddress() {
       return addr;
+    }
+
+    public InetAddress getLocalConnectionAddress() {
+      return localAddr;
+    }
+    
+    public int getLocalPort() {
+      return localPort;
+    }
+    
+    public int getRemotePort() {
+      return remotePort;
     }
     
     public void setLastContact(long lastContact) {

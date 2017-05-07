@@ -45,10 +45,13 @@ import org.apache.hadoop.security.AccessControlException;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.util.Arrays;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import static org.apache.hadoop.util.Time.now;
 
 class FSDirStatAndListingOp {
+  static final Logger LOG = LoggerFactory.getLogger(FSDirStatAndListingOp.class);
   static DirectoryListing getListingInt(FSDirectory fsd, final String srcArg,
       byte[] startAfter, boolean needLocation) throws IOException {
     final FSPermissionChecker pc = fsd.getPermissionChecker();
@@ -73,10 +76,13 @@ class FSDirStatAndListingOp {
 
     boolean isSuperUser = true;
     if (fsd.isPermissionEnabled()) {
+      LOG.info("ListingInt: permission enabled, arg = " + srcArg + "iip last: " + iip.getLastINode());
       if (iip.getLastINode() != null && iip.getLastINode().isDirectory()) {
         fsd.checkPathAccess(pc, iip, FsAction.READ_EXECUTE);
       }
       isSuperUser = pc.isSuperUser();
+    } else {
+      LOG.info("ListingInt: permission disabled");
     }
     return getListing(fsd, iip, startAfter, needLocation, isSuperUser);
   }

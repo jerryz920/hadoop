@@ -18,8 +18,16 @@
 package org.apache.hadoop.hdfs.server.namenode;
 
 import java.io.IOException;
+import java.io.DataOutputStream;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.io.File;
+import java.util.Scanner;
 import java.util.Collection;
 import java.util.Stack;
+import java.util.HashMap;
+import java.net.URL;
+import java.net.HttpURLConnection;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -28,6 +36,7 @@ import org.apache.hadoop.fs.permission.AclEntryScope;
 import org.apache.hadoop.fs.permission.AclEntryType;
 import org.apache.hadoop.fs.permission.FsAction;
 import org.apache.hadoop.fs.permission.FsPermission;
+import org.apache.hadoop.ipc.Server;
 import org.apache.hadoop.hdfs.DFSUtil;
 import org.apache.hadoop.hdfs.protocol.UnresolvedPathException;
 import org.apache.hadoop.hdfs.server.namenode.INodeAttributeProvider.AccessControlEnforcer;
@@ -44,6 +53,103 @@ import org.apache.hadoop.security.UserGroupInformation;
  */
 class FSPermissionChecker implements AccessControlEnforcer {
   static final Log LOG = LogFactory.getLog(UserGroupInformation.class);
+
+  /* FIXME: All these hard coded stuffs need configurations */
+  static HashMap<String, String> abacPrefixes = new HashMap<String, String>(); /// map for Abac test
+  static final String abacAttestPrincipal = "152.3.145.138:4144";
+  static final String abacServer = "10.10.1.6";
+  static final String abacProtocol = "http";
+  static final int abacPort = 7777;
+  static final String abacAccessCheckEndpoint = "/appAccessesObject";
+  static final String abacPolicyFile = "/var/lib/abac.json";
+
+  static {
+    try {
+      /// this file should be dynamically created and checkpointed, each line represent
+      /// An abac target
+      Scanner r = new Scanner(new File(abacPolicyFile));
+      while (r.hasNextLine()) {
+        String line = r.nextLine();
+        String parts[] = line.split(" ");
+	LOG.debug("reading abac policy line " + line);
+ 	if (parts.length == 1) {
+          abacPrefixes.put(parts[0], parts[0]);
+        } else {
+	  abacPrefixes.put(parts[0], parts[1]); 
+        }
+      }
+      r.close();
+    } catch (IOException e) {
+      LOG.error("IO exception occurs when processing ABAC policy file {}", e);
+    } catch (Throwable e) {
+      LOG.error("unknown error {}", e);
+    } finally {
+      LOG.info("abac: end of static initializer of fs permission ");
+    }
+
+  }
+
+  static String getAbacPayload(String accessor) {
+     StringBuilder sb = new StringBuilder();
+     sb.append("{ \"principal\": \"");
+     sb.append(abacAttestPrincipal);
+     sb.append("\", \"otherValues\": [\"");
+     sb.append(Server.getRemoteAddress());
+     sb.append(":");
+     sb.append(Server.getRemotePort());
+     sb.append("\", \"");
+     sb.append(accessor);
+     sb.append("\"]}");
+     return sb.toString();
+  }
+
+  static boolean doAbacCheck(String pathname) {
+    if (NameNodeRpcServer.shouldDoAbacCheck()) {
+      String accessor = abacPrefixes.get(pathname);
+      LOG.info("abac checking on path: " + pathname + ", accessor =" + accessor);
+      if (accessor != null) {
+        /// we don't have special char so far... So default one should work
+        byte payload[] = getAbacPayload(accessor).getBytes();
+	LOG.info("payload of abac: " + new String(payload));
+  	HttpURLConnection conn = null;
+	try {
+          conn = (HttpURLConnection) (new URL(abacProtocol, abacServer, abacPort,
+			  abacAccessCheckEndpoint).openConnection());
+	  conn.setDoOutput(true);
+	  conn.setRequestMethod("POST");
+	  conn.setRequestProperty("Content-Type", "application/json"); 
+	  //conn.setRequestProperty("charset", "utf-8");
+	  conn.setRequestProperty("Content-Length", "" + payload.length);
+	  conn.setUseCaches(false);
+          conn.connect();
+	  DataOutputStream writer = new DataOutputStream(conn.getOutputStream());
+	  writer.write(payload);
+	  writer.flush();
+	  StringBuilder data = new StringBuilder();
+	  BufferedReader reader = new BufferedReader(new 
+			  InputStreamReader(conn.getInputStream()));
+	  String line;
+	  while ((line = reader.readLine()) != null) {
+            data.append(line);
+	  }
+	  reader.close();
+	  writer.close();
+	  LOG.debug("abac response: " +  data.toString());
+          if (data.indexOf("approveAccess") == -1) {
+	    return false;
+          } 
+	} catch (IOException e) {
+          LOG.error("error connecting to " + abacProtocol + "://" +  
+		abacServer + ":" + abacPort + "/" + abacAccessCheckEndpoint);
+	  if (conn != null) {
+            conn.disconnect();
+	  }
+	  return false;
+	}
+      }
+    }
+    return true;
+  }
 
   private static String getPath(byte[][] components, int start, int end) {
     return DFSUtil.byteArray2PathString(components, start, end - start + 1);
@@ -114,6 +220,7 @@ class FSPermissionChecker implements AccessControlEnforcer {
     return (attributeProvider != null)
         ? attributeProvider.getExternalAccessControlEnforcer(this) : this;
   }
+
 
   /**
    * Verify if the caller has the required permission. This will result into 
@@ -189,6 +296,11 @@ class FSPermissionChecker implements AccessControlEnforcer {
     enforcer.checkPermission(fsOwner, supergroup, callerUgi, inodeAttrs, inodes,
         components, snapshotId, path, ancestorIndex, doCheckOwner,
         ancestorAccess, parentAccess, access, subAccess, ignoreEmptyDir);
+    try {
+      LOG.info("Abac checking result: " +  doAbacCheck(path));
+    } catch (Exception e) {
+      LOG.error("error in abac checking: {}", e);
+    }
   }
 
   @Override

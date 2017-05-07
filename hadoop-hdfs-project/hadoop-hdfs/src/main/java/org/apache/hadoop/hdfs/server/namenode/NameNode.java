@@ -368,6 +368,20 @@ public class NameNode implements NameNodeStatusMXBean {
    * will be the logical address.
    */
   private String clientNamenodeAddress;
+
+  /**
+   * Redundant client RPC address. Used to check if the incoming request is
+   * from client side.
+   */
+  private InetSocketAddress clientRpcServerAddress;
+
+  void setClientRpcServerAddress(String bindHost, int port) throws IOException {
+    this.clientRpcServerAddress = new InetSocketAddress(bindHost, port);
+  }
+  
+  InetSocketAddress getClientRpcServerAddress() {
+    return this.clientRpcServerAddress;
+  }
   
   /** Format a new filesystem.  Destroys any filesystem that may already
    * exist at this location.  **/

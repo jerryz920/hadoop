@@ -33,6 +33,7 @@ import static org.apache.hadoop.util.Time.now;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.net.InetAddress;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.EnumSet;
@@ -235,6 +236,56 @@ public class NameNodeRpcServer implements NamenodeProtocols {
   
   private final String minimumDataNodeVersion;
 
+  /** states related with file based ABAC checking */
+  // abac may occur recursively. If the connection is not client traffic,
+  // we can bypass it.
+  static final private ThreadLocal<Boolean> EnforceAbac = new ThreadLocal<Boolean>() {
+    @Override protected Boolean initialValue() {
+      return false;
+    } 
+  }; 
+
+  static boolean shouldDoAbacCheck() {
+    return EnforceAbac.get();
+  }
+
+  private void abacClearState() {
+       EnforceAbac.set(false);
+  }
+
+  private void abacSetState(String cmd, String src, String clientName) {
+    LOG.info("Abac hook, cmd: {}, src {}, clientname {}", cmd, src, clientName);
+    String socketHostAddress = Server.getLocalConnectionAddress();
+    if (socketHostAddress == null) {
+       LOG.info("no incoming local address, skipping ABAC check");
+       return;
+    }
+    int localPort = Server.getLocalPort();
+
+    String socketRemoteAddress = Server.getRemoteAddress();
+    if (socketRemoteAddress == null) {
+       LOG.info("no incoming remote address, skipping ABAC check");
+       return;
+    }
+    int remotePort = Server.getRemotePort();
+
+    InetSocketAddress bindAddress = this.nn.getClientRpcServerAddress();
+    LOG.info("abac: ip bind {}, incoming host {}, remote host {}",
+                   bindAddress.getAddress(), socketHostAddress,
+		   socketHostAddress);
+    LOG.info("abac: wildcard, bind port {}, host port {}, remote port {}",
+                   bindAddress.getPort(), localPort, remotePort);
+    if (localPort == bindAddress.getPort() && (
+		bindAddress.getAddress().isAnyLocalAddress() ||
+ 		bindAddress.getAddress().getHostAddress() == socketHostAddress)) {
+       LOG.info("is client traffic, setting abac state! remote {}:{}",
+ 			socketRemoteAddress, remotePort);	
+       EnforceAbac.set(true);
+    } else {
+       EnforceAbac.set(false);
+    }
+  }
+
   public NameNodeRpcServer(Configuration conf, NameNode nn)
       throws IOException {
     this.nn = nn;
@@ -419,6 +470,8 @@ public class NameNodeRpcServer implements NamenodeProtocols {
         .setPort(rpcAddr.getPort()).setNumHandlers(handlerCount)
         .setVerbose(false)
         .setSecretManager(namesystem.getDelegationTokenSecretManager()).build();
+    /// only used by ABAC hooks
+    this.nn.setClientRpcServerAddress(bindHost, rpcAddr.getPort());
 
     // Add all the RPC protocols that the namenode implements
     DFSUtil.addPBProtocol(conf, HAServiceProtocolPB.class, haPbService,
@@ -705,20 +758,24 @@ public class NameNodeRpcServer implements NamenodeProtocols {
       CryptoProtocolVersion[] supportedVersions)
       throws IOException {
     checkNNStartup();
+    abacSetState("create", src, clientName);
     String clientMachine = getClientMachine();
     if (stateChangeLog.isDebugEnabled()) {
       stateChangeLog.debug("*DIR* NameNode.create: file "
           +src+" for "+clientName+" at "+clientMachine);
     }
     if (!checkPathLength(src)) {
+      abacClearState();
       throw new IOException("create: Pathname too long.  Limit "
           + MAX_PATH_LENGTH + " characters, " + MAX_PATH_DEPTH + " levels.");
     }
     namesystem.checkOperation(OperationCategory.WRITE);
     CacheEntryWithPayload cacheEntry = RetryCache.waitForCompletion(retryCache, null);
     if (cacheEntry != null && cacheEntry.isSuccess()) {
+      abacClearState();
       return (HdfsFileStatus) cacheEntry.getPayload();
     }
+    
 
     HdfsFileStatus status = null;
     try {
@@ -731,6 +788,7 @@ public class NameNodeRpcServer implements NamenodeProtocols {
       RetryCache.setState(cacheEntry, status != null, status);
     }
 
+    abacClearState();
     metrics.incrFilesCreated();
     metrics.incrCreateFileOps();
     return status;
@@ -740,6 +798,7 @@ public class NameNodeRpcServer implements NamenodeProtocols {
   public LastBlockWithStatus append(String src, String clientName,
       EnumSetWritable<CreateFlag> flag) throws IOException {
     checkNNStartup();
+    abacSetState("append", src, clientName);
     String clientMachine = getClientMachine();
     if (stateChangeLog.isDebugEnabled()) {
       stateChangeLog.debug("*DIR* NameNode.append: file "
@@ -749,6 +808,7 @@ public class NameNodeRpcServer implements NamenodeProtocols {
     CacheEntryWithPayload cacheEntry = RetryCache.waitForCompletion(retryCache,
         null);
     if (cacheEntry != null && cacheEntry.isSuccess()) {
+      abacClearState();
       return (LastBlockWithStatus) cacheEntry.getPayload();
     }
 
@@ -761,6 +821,7 @@ public class NameNodeRpcServer implements NamenodeProtocols {
     } finally {
       RetryCache.setState(cacheEntry, success, info);
     }
+    abacClearState();
     metrics.incrFilesAppended();
     return info;
   }
@@ -809,14 +870,18 @@ public class NameNodeRpcServer implements NamenodeProtocols {
   public void setPermission(String src, FsPermission permissions)
       throws IOException {
     checkNNStartup();
+    abacSetState("setPermission", src, "noclient");
     namesystem.setPermission(src, permissions);
+    abacClearState();
   }
 
   @Override // ClientProtocol
   public void setOwner(String src, String username, String groupname)
       throws IOException {
     checkNNStartup();
+    abacSetState("setOwner", src, "noclient");
     namesystem.setOwner(src, username, groupname);
+    abacClearState();
   }
   
   @Override
@@ -825,11 +890,13 @@ public class NameNodeRpcServer implements NamenodeProtocols {
       String[] favoredNodes, EnumSet<AddBlockFlag> addBlockFlags)
       throws IOException {
     checkNNStartup();
+    abacSetState("addBlock", src, clientName);
     LocatedBlock locatedBlock = namesystem.getAdditionalBlock(src, fileId,
         clientName, previous, excludedNodes, favoredNodes, addBlockFlags);
     if (locatedBlock != null) {
       metrics.incrAddBlockOps();
     }
+    abacClearState();
     return locatedBlock;
   }
 
@@ -841,6 +908,7 @@ public class NameNodeRpcServer implements NamenodeProtocols {
       final int numAdditionalNodes, final String clientName
       ) throws IOException {
     checkNNStartup();
+    abacSetState("getAdditionDataNode", src, clientName);
     if (LOG.isDebugEnabled()) {
       LOG.debug("getAdditionalDatanode: src=" + src
           + ", fileId=" + fileId
@@ -860,6 +928,7 @@ public class NameNodeRpcServer implements NamenodeProtocols {
         excludeSet.add(node);
       }
     }
+    abacClearState();
     return namesystem.getAdditionalDatanode(src, fileId, blk, existings,
         existingStorageIDs, excludeSet, numAdditionalNodes, clientName);
   }
@@ -870,7 +939,9 @@ public class NameNodeRpcServer implements NamenodeProtocols {
   public void abandonBlock(ExtendedBlock b, long fileId, String src,
         String holder) throws IOException {
     checkNNStartup();
+    abacSetState("abandonBlock", "", "");
     namesystem.abandonBlock(b, fileId, src, holder);
+    abacClearState();
   }
 
   @Override // ClientProtocol
@@ -878,7 +949,10 @@ public class NameNodeRpcServer implements NamenodeProtocols {
                           ExtendedBlock last,  long fileId)
       throws IOException {
     checkNNStartup();
-    return namesystem.completeFile(src, clientName, last, fileId);
+    abacSetState("complete", src, clientName);
+    boolean ret = namesystem.completeFile(src, clientName, last, fileId);
+    abacClearState();
+    return ret;
   }
 
   /**
@@ -890,14 +964,19 @@ public class NameNodeRpcServer implements NamenodeProtocols {
   @Override // ClientProtocol, DatanodeProtocol
   public void reportBadBlocks(LocatedBlock[] blocks) throws IOException {
     checkNNStartup();
+    abacSetState("reportBadBlock", "", "");
     namesystem.reportBadBlocks(blocks);
+    abacClearState();
   }
 
   @Override // ClientProtocol
   public LocatedBlock updateBlockForPipeline(ExtendedBlock block, String clientName)
       throws IOException {
     checkNNStartup();
-    return namesystem.updateBlockForPipeline(block, clientName);
+    abacSetState("updateBlockForPipeline", "", clientName);
+    LocatedBlock ret = namesystem.updateBlockForPipeline(block, clientName);
+    abacClearState();
+    return ret;
   }
 
 
@@ -906,9 +985,11 @@ public class NameNodeRpcServer implements NamenodeProtocols {
       ExtendedBlock newBlock, DatanodeID[] newNodes, String[] newStorageIDs)
       throws IOException {
     checkNNStartup();
+    abacSetState("updatePipeline", "", clientName);
     namesystem.checkOperation(OperationCategory.WRITE);
     CacheEntry cacheEntry = RetryCache.waitForCompletion(retryCache);
     if (cacheEntry != null && cacheEntry.isSuccess()) {
+      abacClearState();
       return; // Return previous response
     }
 
@@ -919,6 +1000,7 @@ public class NameNodeRpcServer implements NamenodeProtocols {
       success = true;
     } finally {
       RetryCache.setState(cacheEntry, success);
+      abacClearState();
     }
   }
   
@@ -944,16 +1026,19 @@ public class NameNodeRpcServer implements NamenodeProtocols {
   @Override // ClientProtocol
   public boolean rename(String src, String dst) throws IOException {
     checkNNStartup();
+    abacSetState("rename", src, "");
     if(stateChangeLog.isDebugEnabled()) {
       stateChangeLog.debug("*DIR* NameNode.rename: " + src + " to " + dst);
     }
     if (!checkPathLength(dst)) {
+      abacClearState();
       throw new IOException("rename: Pathname too long.  Limit "
           + MAX_PATH_LENGTH + " characters, " + MAX_PATH_DEPTH + " levels.");
     }
     namesystem.checkOperation(OperationCategory.WRITE);
     CacheEntry cacheEntry = RetryCache.waitForCompletion(retryCache);
     if (cacheEntry != null && cacheEntry.isSuccess()) {
+      abacClearState();
       return true; // Return previous response
     }
 
@@ -966,15 +1051,18 @@ public class NameNodeRpcServer implements NamenodeProtocols {
     if (ret) {
       metrics.incrFilesRenamed();
     }
+    abacClearState();
     return ret;
   }
   
   @Override // ClientProtocol
   public void concat(String trg, String[] src) throws IOException {
     checkNNStartup();
+    abacSetState("concat", "", "");
     namesystem.checkOperation(OperationCategory.WRITE);
     CacheEntry cacheEntry = RetryCache.waitForCompletion(retryCache);
     if (cacheEntry != null && cacheEntry.isSuccess()) {
+      abacClearState();
       return; // Return previous response
     }
     boolean success = false;
@@ -984,6 +1072,7 @@ public class NameNodeRpcServer implements NamenodeProtocols {
       success = true;
     } finally {
       RetryCache.setState(cacheEntry, success);
+      abacClearState();
     }
   }
   
@@ -991,16 +1080,19 @@ public class NameNodeRpcServer implements NamenodeProtocols {
   public void rename2(String src, String dst, Options.Rename... options)
       throws IOException {
     checkNNStartup();
+    abacSetState("rename2", src, "");
     if(stateChangeLog.isDebugEnabled()) {
       stateChangeLog.debug("*DIR* NameNode.rename: " + src + " to " + dst);
     }
     if (!checkPathLength(dst)) {
+      abacClearState();
       throw new IOException("rename: Pathname too long.  Limit "
           + MAX_PATH_LENGTH + " characters, " + MAX_PATH_DEPTH + " levels.");
     }
     namesystem.checkOperation(OperationCategory.WRITE);
     CacheEntry cacheEntry = RetryCache.waitForCompletion(retryCache);
     if (cacheEntry != null && cacheEntry.isSuccess()) {
+      abacClearState();
       return; // Return previous response
     }
     boolean success = false;
@@ -1009,6 +1101,7 @@ public class NameNodeRpcServer implements NamenodeProtocols {
       success = true;
     } finally {
       RetryCache.setState(cacheEntry, success);
+      abacClearState();
     }
     metrics.incrFilesRenamed();
   }
@@ -1020,11 +1113,13 @@ public class NameNodeRpcServer implements NamenodeProtocols {
       stateChangeLog.debug("*DIR* NameNode.truncate: " + src + " to " +
           newLength);
     }
+    abacSetState("truncate", src, clientName);
     String clientMachine = getClientMachine();
     try {
       return namesystem.truncate(
           src, newLength, clientName, clientMachine, now());
     } finally {
+      abacClearState();
       metrics.incrFilesTruncated();
     }
   }
@@ -1036,9 +1131,11 @@ public class NameNodeRpcServer implements NamenodeProtocols {
       stateChangeLog.debug("*DIR* Namenode.delete: src=" + src
           + ", recursive=" + recursive);
     }
+    abacSetState("delete", src, "");
     namesystem.checkOperation(OperationCategory.WRITE);
     CacheEntry cacheEntry = RetryCache.waitForCompletion(retryCache);
     if (cacheEntry != null && cacheEntry.isSuccess()) {
+      abacClearState();
       return true; // Return previous response
     }
 
@@ -1047,6 +1144,7 @@ public class NameNodeRpcServer implements NamenodeProtocols {
       ret = namesystem.delete(src, recursive, cacheEntry != null);
     } finally {
       RetryCache.setState(cacheEntry, ret);
+      abacClearState();
     }
     if (ret) 
       metrics.incrDeleteFileOps();
@@ -1068,69 +1166,92 @@ public class NameNodeRpcServer implements NamenodeProtocols {
   public boolean mkdirs(String src, FsPermission masked, boolean createParent)
       throws IOException {
     checkNNStartup();
+    abacSetState("mkdir", src, "");
     if(stateChangeLog.isDebugEnabled()) {
       stateChangeLog.debug("*DIR* NameNode.mkdirs: " + src);
     }
     if (!checkPathLength(src)) {
+      abacClearState();
       throw new IOException("mkdirs: Pathname too long.  Limit " 
                             + MAX_PATH_LENGTH + " characters, " + MAX_PATH_DEPTH + " levels.");
     }
-    return namesystem.mkdirs(src,
+    boolean ret = namesystem.mkdirs(src,
         new PermissionStatus(getRemoteUser().getShortUserName(),
             null, masked), createParent);
+
+    abacClearState();
+    return ret;
   }
 
   @Override // ClientProtocol
   public void renewLease(String clientName) throws IOException {
     checkNNStartup();
+    abacSetState("renewLease", "", clientName);
     namesystem.renewLease(clientName);        
+    abacClearState();
   }
 
   @Override // ClientProtocol
   public DirectoryListing getListing(String src, byte[] startAfter,
       boolean needLocation) throws IOException {
     checkNNStartup();
+    abacSetState("getListing", src, "");
     DirectoryListing files = namesystem.getListing(
         src, startAfter, needLocation);
     if (files != null) {
       metrics.incrGetListingOps();
       metrics.incrFilesInGetListingOps(files.getPartialListing().length);
     }
+    abacClearState();
     return files;
   }
 
   @Override // ClientProtocol
   public HdfsFileStatus getFileInfo(String src)  throws IOException {
     checkNNStartup();
+    abacSetState("getFileInfo", src, "");
     metrics.incrFileInfoOps();
-    return namesystem.getFileInfo(src, true);
+    HdfsFileStatus ret = namesystem.getFileInfo(src, true);
+    abacClearState();
+    return ret;
   }
   
   @Override // ClientProtocol
   public boolean isFileClosed(String src) throws IOException{
     checkNNStartup();
-    return namesystem.isFileClosed(src);
+    abacSetState("isFileClosed", src, "");
+    boolean ret = namesystem.isFileClosed(src);
+    abacClearState();
+    return ret;
   }
   
   @Override // ClientProtocol
   public HdfsFileStatus getFileLinkInfo(String src) throws IOException {
     checkNNStartup();
     metrics.incrFileInfoOps();
-    return namesystem.getFileInfo(src, false);
+    abacSetState("isFileClosed", src, "");
+    HdfsFileStatus ret = namesystem.getFileInfo(src, false);
+    abacClearState();
+    return ret;
   }
   
   @Override // ClientProtocol
   public long[] getStats() throws IOException {
     checkNNStartup();
+    abacSetState("getStats", "", "");
     namesystem.checkOperation(OperationCategory.READ);
-    return namesystem.getStats();
+    long data[] = namesystem.getStats();
+    abacClearState();
+    return data;
   }
 
   @Override // ClientProtocol
   public DatanodeInfo[] getDatanodeReport(DatanodeReportType type)
   throws IOException {
     checkNNStartup();
+    abacSetState("getDatanodeReport", "", "");
     DatanodeInfo results[] = namesystem.datanodeReport(type);
+    abacClearState();
     return results;
   }
 
@@ -1138,7 +1259,9 @@ public class NameNodeRpcServer implements NamenodeProtocols {
   public DatanodeStorageReport[] getDatanodeStorageReport(
       DatanodeReportType type) throws IOException {
     checkNNStartup();
+    abacSetState("getDatanodeUsageReport", "", "");
     final DatanodeStorageReport[] reports = namesystem.getDatanodeStorageReport(type);
+    abacClearState();
     return reports;
   }
 
@@ -1257,13 +1380,16 @@ public class NameNodeRpcServer implements NamenodeProtocols {
   @Override // ClientProtocol
   public void metaSave(String filename) throws IOException {
     checkNNStartup();
+    abacSetState("metaSave", "", "");
     namesystem.metaSave(filename);
+    abacClearState();
   }
 
   @Override // ClientProtocol
   public CorruptFileBlocks listCorruptFileBlocks(String path, String cookie)
       throws IOException {
     checkNNStartup();
+    abacSetState("listCorruptFileBlocks", "", "");
     String[] cookieTab = new String[] { cookie };
     Collection<FSNamesystem.CorruptFileBlockInfo> fbs =
       namesystem.listCorruptFileBlocks(path, cookieTab);
@@ -1273,6 +1399,7 @@ public class NameNodeRpcServer implements NamenodeProtocols {
     for(FSNamesystem.CorruptFileBlockInfo fb: fbs) {
       files[i++] = fb.path;
     }
+    abacClearState();
     return new CorruptFileBlocks(files, cookieTab[0]);
   }
 
@@ -1291,13 +1418,19 @@ public class NameNodeRpcServer implements NamenodeProtocols {
   @Override // ClientProtocol
   public ContentSummary getContentSummary(String path) throws IOException {
     checkNNStartup();
-    return namesystem.getContentSummary(path);
+    abacSetState("getContentSummary", "", "");
+    ContentSummary ret = namesystem.getContentSummary(path);
+    abacClearState();
+    return ret;
   }
 
   @Override // ClientProtocol
   public QuotaUsage getQuotaUsage(String path) throws IOException {
     checkNNStartup();
-    return namesystem.getQuotaUsage(path);
+    abacSetState("getQuotaUsage", "", "");
+    QuotaUsage ret = namesystem.getQuotaUsage(path);
+    abacClearState();
+    return ret;
   }
 
   @Override // ClientProtocol
@@ -1305,7 +1438,9 @@ public class NameNodeRpcServer implements NamenodeProtocols {
                        StorageType type)
       throws IOException {
     checkNNStartup();
+    abacSetState("setQuota", "", "");
     namesystem.setQuota(path, namespaceQuota, storagespaceQuota, type);
+    abacClearState();
   }
   
   @Override // ClientProtocol
@@ -1313,23 +1448,29 @@ public class NameNodeRpcServer implements NamenodeProtocols {
                     long lastBlockLength)
       throws IOException {
     checkNNStartup();
+    abacSetState("fsync", src, "");
     namesystem.fsync(src, fileId, clientName, lastBlockLength);
+    abacClearState();
   }
 
   @Override // ClientProtocol
   public void setTimes(String src, long mtime, long atime) 
       throws IOException {
     checkNNStartup();
+    abacSetState("setTimes", src, "");
     namesystem.setTimes(src, mtime, atime);
+    abacClearState();
   }
 
   @Override // ClientProtocol
   public void createSymlink(String target, String link, FsPermission dirPerms,
       boolean createParent) throws IOException {
     checkNNStartup();
+    abacSetState("createSymLink", "", "");
     namesystem.checkOperation(OperationCategory.WRITE);
     CacheEntry cacheEntry = RetryCache.waitForCompletion(retryCache);
     if (cacheEntry != null && cacheEntry.isSuccess()) {
+      abacClearState();
       return; // Return previous response
     }
 
@@ -1337,6 +1478,7 @@ public class NameNodeRpcServer implements NamenodeProtocols {
      * URI may refer to a non-HDFS file system. 
      */
     if (!checkPathLength(link)) {
+      abacClearState();
       throw new IOException("Symlink path exceeds " + MAX_PATH_LENGTH +
                             " character limit");
                             
@@ -1353,12 +1495,14 @@ public class NameNodeRpcServer implements NamenodeProtocols {
       success = true;
     } finally {
       RetryCache.setState(cacheEntry, success);
+      abacClearState();
     }
   }
 
   @Override // ClientProtocol
   public String getLinkTarget(String path) throws IOException {
     checkNNStartup();
+    abacSetState("getLinkTarget", "", "");
     metrics.incrGetLinkTargetOps();
     HdfsFileStatus stat = null;
     try {
@@ -1368,6 +1512,8 @@ public class NameNodeRpcServer implements NamenodeProtocols {
     } catch (UnresolvedLinkException e) {
       // The NameNode should only throw an UnresolvedPathException
       throw new AssertionError("UnresolvedLinkException thrown");
+    } finally {
+      abacClearState();
     }
     if (stat == null) {
       throw new FileNotFoundException("File does not exist: " + path);
@@ -1736,7 +1882,9 @@ public class NameNodeRpcServer implements NamenodeProtocols {
   public void allowSnapshot(String snapshotRoot) throws IOException {
     checkNNStartup();
     metrics.incrAllowSnapshotOps();
+    abacSetState("allowSnapshot", "", "");
     namesystem.allowSnapshot(snapshotRoot);
+    abacClearState();
   }
 
   @Override
@@ -1744,7 +1892,9 @@ public class NameNodeRpcServer implements NamenodeProtocols {
   public void disallowSnapshot(String snapshot) throws IOException {
     checkNNStartup();
     metrics.incrDisAllowSnapshotOps();
+    abacSetState("disallowSnapshot", "", "");
     namesystem.disallowSnapshot(snapshot);
+    abacClearState();
   }
 
   @Override
@@ -1752,13 +1902,16 @@ public class NameNodeRpcServer implements NamenodeProtocols {
   public void renameSnapshot(String snapshotRoot, String snapshotOldName,
       String snapshotNewName) throws IOException {
     checkNNStartup();
+    abacSetState("renameSnapshot", "", "");
     if (snapshotNewName == null || snapshotNewName.isEmpty()) {
+      abacClearState();
       throw new IOException("The new snapshot name is null or empty.");
     }
     namesystem.checkOperation(OperationCategory.WRITE);
     metrics.incrRenameSnapshotOps();
     CacheEntry cacheEntry = RetryCache.waitForCompletion(retryCache);
     if (cacheEntry != null && cacheEntry.isSuccess()) {
+      abacClearState();
       return; // Return previous response
     }
     boolean success = false;
@@ -1768,6 +1921,7 @@ public class NameNodeRpcServer implements NamenodeProtocols {
       success = true;
     } finally {
       RetryCache.setState(cacheEntry, success);
+      abacClearState();
     }
   }
 
@@ -1775,9 +1929,11 @@ public class NameNodeRpcServer implements NamenodeProtocols {
   public SnapshottableDirectoryStatus[] getSnapshottableDirListing()
       throws IOException {
     checkNNStartup();
+    abacSetState("getSnapshottableDirList", "", "");
     SnapshottableDirectoryStatus[] status = namesystem
         .getSnapshottableDirListing();
     metrics.incrListSnapshottableDirOps();
+    abacClearState();
     return status;
   }
 
@@ -1785,9 +1941,11 @@ public class NameNodeRpcServer implements NamenodeProtocols {
   public SnapshotDiffReport getSnapshotDiffReport(String snapshotRoot,
       String earlierSnapshotName, String laterSnapshotName) throws IOException {
     checkNNStartup();
+    abacSetState("getSnapshotDiffReport", "", "");
     SnapshotDiffReport report = namesystem.getSnapshotDiffReport(snapshotRoot,
         earlierSnapshotName, laterSnapshotName);
     metrics.incrSnapshotDiffReportOps();
+    abacClearState();
     return report;
   }
 
@@ -1795,10 +1953,12 @@ public class NameNodeRpcServer implements NamenodeProtocols {
   public long addCacheDirective(
       CacheDirectiveInfo path, EnumSet<CacheFlag> flags) throws IOException {
     checkNNStartup();
+    abacSetState("addCacheDirective", "", "");
     namesystem.checkOperation(OperationCategory.WRITE);
     CacheEntryWithPayload cacheEntry = RetryCache.waitForCompletion
       (retryCache, null);
     if (cacheEntry != null && cacheEntry.isSuccess()) {
+      abacClearState();
       return (Long) cacheEntry.getPayload();
     }
 
@@ -1809,6 +1969,7 @@ public class NameNodeRpcServer implements NamenodeProtocols {
       success = true;
     } finally {
       RetryCache.setState(cacheEntry, success, ret);
+      abacClearState();
     }
     return ret;
   }
@@ -1817,9 +1978,11 @@ public class NameNodeRpcServer implements NamenodeProtocols {
   public void modifyCacheDirective(
       CacheDirectiveInfo directive, EnumSet<CacheFlag> flags) throws IOException {
     checkNNStartup();
+    abacSetState("modifyCacheDirective", "", "");
     namesystem.checkOperation(OperationCategory.WRITE);
     CacheEntry cacheEntry = RetryCache.waitForCompletion(retryCache);
     if (cacheEntry != null && cacheEntry.isSuccess()) {
+      abacClearState();
       return;
     }
 
@@ -1829,15 +1992,18 @@ public class NameNodeRpcServer implements NamenodeProtocols {
       success = true;
     } finally {
       RetryCache.setState(cacheEntry, success);
+      abacClearState();
     }
   }
 
   @Override // ClientProtocol
   public void removeCacheDirective(long id) throws IOException {
     checkNNStartup();
+    abacSetState("removeCacheDirective", "", "");
     namesystem.checkOperation(OperationCategory.WRITE);
     CacheEntry cacheEntry = RetryCache.waitForCompletion(retryCache);
     if (cacheEntry != null && cacheEntry.isSuccess()) {
+      abacClearState();
       return;
     }
     boolean success = false;
@@ -1846,6 +2012,7 @@ public class NameNodeRpcServer implements NamenodeProtocols {
       success = true;
     } finally {
       RetryCache.setState(cacheEntry, success);
+      abacClearState();
     }
   }
 
@@ -1853,18 +2020,23 @@ public class NameNodeRpcServer implements NamenodeProtocols {
   public BatchedEntries<CacheDirectiveEntry> listCacheDirectives(long prevId,
       CacheDirectiveInfo filter) throws IOException {
     checkNNStartup();
+    abacSetState("listCacheDirectives", "", "");
     if (filter == null) {
       filter = new CacheDirectiveInfo.Builder().build();
     }
-    return namesystem.listCacheDirectives(prevId, filter);
+    BatchedEntries<CacheDirectiveEntry> ret = namesystem.listCacheDirectives(prevId, filter);
+    abacClearState();
+    return ret;
   }
 
   @Override //ClientProtocol
   public void addCachePool(CachePoolInfo info) throws IOException {
     checkNNStartup();
+    abacSetState("addCachePool", "", "");
     namesystem.checkOperation(OperationCategory.WRITE);
     CacheEntry cacheEntry = RetryCache.waitForCompletion(retryCache);
     if (cacheEntry != null && cacheEntry.isSuccess()) {
+      abacClearState();
       return; // Return previous response
     }
     boolean success = false;
@@ -1873,6 +2045,7 @@ public class NameNodeRpcServer implements NamenodeProtocols {
       success = true;
     } finally {
       RetryCache.setState(cacheEntry, success);
+      abacClearState();
     }
   }
 
@@ -1880,8 +2053,10 @@ public class NameNodeRpcServer implements NamenodeProtocols {
   public void modifyCachePool(CachePoolInfo info) throws IOException {
     checkNNStartup();
     namesystem.checkOperation(OperationCategory.WRITE);
+    abacSetState("modifyCachePool", "", "");
     CacheEntry cacheEntry = RetryCache.waitForCompletion(retryCache);
     if (cacheEntry != null && cacheEntry.isSuccess()) {
+      abacClearState();
       return; // Return previous response
     }
     boolean success = false;
@@ -1890,15 +2065,18 @@ public class NameNodeRpcServer implements NamenodeProtocols {
       success = true;
     } finally {
       RetryCache.setState(cacheEntry, success);
+      abacClearState();
     }
   }
 
   @Override // ClientProtocol
   public void removeCachePool(String cachePoolName) throws IOException {
     checkNNStartup();
+    abacSetState("removeCachePool", "", "");
     namesystem.checkOperation(OperationCategory.WRITE);
     CacheEntry cacheEntry = RetryCache.waitForCompletion(retryCache);
     if (cacheEntry != null && cacheEntry.isSuccess()) {
+      abacClearState();
       return;
     }
     boolean success = false;
@@ -1907,6 +2085,7 @@ public class NameNodeRpcServer implements NamenodeProtocols {
       success = true;
     } finally {
       RetryCache.setState(cacheEntry, success);
+      abacClearState();
     }
   }
 
@@ -1914,45 +2093,62 @@ public class NameNodeRpcServer implements NamenodeProtocols {
   public BatchedEntries<CachePoolEntry> listCachePools(String prevKey)
       throws IOException {
     checkNNStartup();
-    return namesystem.listCachePools(prevKey != null ? prevKey : "");
+    abacSetState("listCachePools", "", "");
+    BatchedEntries<CachePoolEntry> ret = namesystem.listCachePools(
+			prevKey != null ? prevKey : "");
+    abacClearState();
+    return ret;
   }
 
   @Override // ClientProtocol
   public void modifyAclEntries(String src, List<AclEntry> aclSpec)
       throws IOException {
     checkNNStartup();
+    abacSetState("modifyAclEntries", src, "");
     namesystem.modifyAclEntries(src, aclSpec);
+    abacClearState();
   }
 
   @Override // ClienProtocol
   public void removeAclEntries(String src, List<AclEntry> aclSpec)
       throws IOException {
     checkNNStartup();
+    abacSetState("removeAclEntries", src, "");
     namesystem.removeAclEntries(src, aclSpec);
+    abacClearState();
   }
 
   @Override // ClientProtocol
   public void removeDefaultAcl(String src) throws IOException {
     checkNNStartup();
+    abacSetState("removeDefatulAcl", src, "");
     namesystem.removeDefaultAcl(src);
+    abacClearState();
   }
 
   @Override // ClientProtocol
   public void removeAcl(String src) throws IOException {
     checkNNStartup();
+    abacSetState("removeacl", src, "");
     namesystem.removeAcl(src);
+    abacClearState();
   }
 
   @Override // ClientProtocol
   public void setAcl(String src, List<AclEntry> aclSpec) throws IOException {
     checkNNStartup();
+    abacSetState("setacl", src, "");
     namesystem.setAcl(src, aclSpec);
+    abacClearState();
   }
 
   @Override // ClientProtocol
   public AclStatus getAclStatus(String src) throws IOException {
     checkNNStartup();
-    return namesystem.getAclStatus(src);
+    abacSetState("setacl", src, "");
+    AclStatus ret = namesystem.getAclStatus(src);
+    abacClearState();
+    return ret;
   }
   
   @Override // ClientProtocol
@@ -1960,8 +2156,10 @@ public class NameNodeRpcServer implements NamenodeProtocols {
     throws IOException {
     checkNNStartup();
     namesystem.checkOperation(OperationCategory.WRITE);
+    abacSetState("createEncryptionZone", src, "");
     final CacheEntry cacheEntry = RetryCache.waitForCompletion(retryCache);
     if (cacheEntry != null && cacheEntry.isSuccess()) {
+      abacClearState();
       return;
     }
     boolean success = false;
@@ -1970,6 +2168,7 @@ public class NameNodeRpcServer implements NamenodeProtocols {
       success = true;
     } finally {
       RetryCache.setState(cacheEntry, success);
+      abacClearState();
     }
   }
 
@@ -1977,14 +2176,20 @@ public class NameNodeRpcServer implements NamenodeProtocols {
   public EncryptionZone getEZForPath(String src)
     throws IOException {
     checkNNStartup();
-    return namesystem.getEZForPath(src);
+    abacSetState("getEzForPath", src, "");
+    EncryptionZone ret = namesystem.getEZForPath(src);
+    abacClearState();
+    return ret;
   }
 
   @Override // ClientProtocol
   public BatchedEntries<EncryptionZone> listEncryptionZones(
       long prevId) throws IOException {
     checkNNStartup();
-    return namesystem.listEncryptionZones(prevId);
+    abacSetState("listEncryptionZones", "", "");
+    BatchedEntries<EncryptionZone> ret = namesystem.listEncryptionZones(prevId);
+    abacClearState();
+    return ret;
   }
 
   @Override // ClientProtocol
@@ -1992,8 +2197,10 @@ public class NameNodeRpcServer implements NamenodeProtocols {
       throws IOException {
     checkNNStartup();
     namesystem.checkOperation(OperationCategory.WRITE);
+    abacSetState("setXAttr", src, "");
     CacheEntry cacheEntry = RetryCache.waitForCompletion(retryCache);
     if (cacheEntry != null && cacheEntry.isSuccess()) {
+      abacClearState();
       return; // Return previous response
     }
     boolean success = false;
@@ -2002,6 +2209,7 @@ public class NameNodeRpcServer implements NamenodeProtocols {
       success = true;
     } finally {
       RetryCache.setState(cacheEntry, success);
+      abacClearState();
     }
   }
   
@@ -2009,21 +2217,29 @@ public class NameNodeRpcServer implements NamenodeProtocols {
   public List<XAttr> getXAttrs(String src, List<XAttr> xAttrs) 
       throws IOException {
     checkNNStartup();
-    return namesystem.getXAttrs(src, xAttrs);
+    abacSetState("getXAttrs", src, "");
+    List<XAttr> ret = namesystem.getXAttrs(src, xAttrs);
+    abacClearState();
+    return ret;
   }
 
   @Override // ClientProtocol
   public List<XAttr> listXAttrs(String src) throws IOException {
     checkNNStartup();
-    return namesystem.listXAttrs(src);
+    abacSetState("listXAttrs", src, "");
+    List<XAttr> ret = namesystem.listXAttrs(src);
+    abacClearState();
+    return ret;
   }
   
   @Override // ClientProtocol
   public void removeXAttr(String src, XAttr xAttr) throws IOException {
     checkNNStartup();
     namesystem.checkOperation(OperationCategory.WRITE);
+    abacSetState("removeXAttrs", src, "");
     CacheEntry cacheEntry = RetryCache.waitForCompletion(retryCache);
     if (cacheEntry != null && cacheEntry.isSuccess()) {
+      abacClearState();
       return; // Return previous response
     }
     boolean success = false;
@@ -2032,6 +2248,7 @@ public class NameNodeRpcServer implements NamenodeProtocols {
       success = true;
     } finally {
       RetryCache.setState(cacheEntry, success);
+      abacClearState();
     }
   }
 
@@ -2044,19 +2261,24 @@ public class NameNodeRpcServer implements NamenodeProtocols {
   @Override // ClientProtocol
   public void checkAccess(String path, FsAction mode) throws IOException {
     checkNNStartup();
+    abacSetState("checkAccess", "", "");
     namesystem.checkAccess(path, mode);
+    abacClearState();
   }
 
   @Override // ClientProtocol
   public long getCurrentEditLogTxid() throws IOException {
     checkNNStartup();
     namesystem.checkOperation(OperationCategory.READ); // only active
+    abacSetState("getCurrentEditLogTxid", "", "");
     namesystem.checkSuperuserPrivilege();
     // if it's not yet open for write, we may be in the process of transitioning
     // from standby to active and may not yet know what the latest committed
     // txid is
-    return namesystem.getEditLog().isOpenForWrite() ?
+    long ret = namesystem.getEditLog().isOpenForWrite() ?
         namesystem.getEditLog().getLastWrittenTxId() : -1;
+    abacClearState();
+    return ret;
   }
 
   private static FSEditLogOp readOp(EditLogInputStream elis)
@@ -2081,6 +2303,7 @@ public class NameNodeRpcServer implements NamenodeProtocols {
     checkNNStartup();
     namesystem.checkOperation(OperationCategory.READ); // only active
     namesystem.checkSuperuserPrivilege();
+    abacSetState("getEditsFromTxid", "", "");
     int maxEventsPerRPC = nn.conf.getInt(
         DFSConfigKeys.DFS_NAMENODE_INOTIFY_MAX_EVENTS_PER_RPC_KEY,
         DFSConfigKeys.DFS_NAMENODE_INOTIFY_MAX_EVENTS_PER_RPC_DEFAULT);
@@ -2103,6 +2326,7 @@ public class NameNodeRpcServer implements NamenodeProtocols {
 
     if (syncTxid > 0 && txid > syncTxid) {
       // we can't read past syncTxid, so there's no point in going any further
+      abacClearState();
       return new EventBatchList(batches, firstSeenTxid, maxSeenTxid, syncTxid);
     }
 
@@ -2115,6 +2339,7 @@ public class NameNodeRpcServer implements NamenodeProtocols {
       // will result
       LOG.info("NN is transitioning from active to standby and FSEditLog " +
       "is closed -- could not read edits");
+      abacClearState();
       return new EventBatchList(batches, firstSeenTxid, maxSeenTxid, syncTxid);
     }
 
@@ -2158,6 +2383,7 @@ public class NameNodeRpcServer implements NamenodeProtocols {
         break;
       }
     }
+    abacClearState();
 
     return new EventBatchList(batches, firstSeenTxid, maxSeenTxid, syncTxid);
   }
