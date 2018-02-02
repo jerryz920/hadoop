@@ -80,8 +80,8 @@ RUN add-apt-repository -y ppa:webupd8team/java
 RUN apt-get -q update
 
 # Auto-accept the Oracle JDK license
-RUN echo oracle-java7-installer shared/accepted-oracle-license-v1-1 select true | sudo /usr/bin/debconf-set-selections
-RUN apt-get -q install --no-install-recommends -y oracle-java7-installer
+#RUN echo oracle-java7-installer shared/accepted-oracle-license-v1-1 select true | sudo /usr/bin/debconf-set-selections
+#RUN apt-get -q install --no-install-recommends -y oracle-java7-installer
 
 # Auto-accept the Oracle JDK license
 RUN echo oracle-java8-installer shared/accepted-oracle-license-v1-1 select true | sudo /usr/bin/debconf-set-selections
@@ -118,6 +118,13 @@ RUN apt-get -q install --no-install-recommends -y bats
 ####
 # Install pylint
 ####
+RUN pip install --upgrade pip
+RUN wget https://pypi.python.org/packages/d0/fa/251113165747809c5d515836897962cb6d725f4284bdc010200bbf271575/isort-4.3.0.tar.gz#md5=5edac4bbac4c0125d9528a2c7db1a522 && \
+	tar xf isort-4.3.0.tar.gz && cd isort-4.3.0/ && \
+	sed -i 's/install_requires.*/install_requires=["futures > 1.0"],/' setup.py && \
+	python setup.py install
+
+
 RUN pip install pylint
 
 ####

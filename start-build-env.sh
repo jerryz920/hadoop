@@ -33,8 +33,8 @@ fi
 
 docker build -t "hadoop-build-${USER_NAME}" - <<UserSpecificDocker
 FROM hadoop-build
-RUN groupadd --non-unique -g ${GROUP_ID} ${USER_NAME}
-RUN useradd -g ${GROUP_ID} -u ${USER_ID} -k /root -m ${USER_NAME}
+#RUN groupadd --non-unique -g ${GROUP_ID} ${USER_NAME}
+#RUN useradd -g ${GROUP_ID} -u ${USER_ID} -k /root -m ${USER_NAME}
 ENV HOME /home/${USER_NAME}
 UserSpecificDocker
 
