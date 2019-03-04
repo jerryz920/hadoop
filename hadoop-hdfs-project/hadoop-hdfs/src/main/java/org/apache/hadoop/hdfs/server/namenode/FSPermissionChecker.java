@@ -54,14 +54,25 @@ import org.apache.hadoop.security.UserGroupInformation;
 class FSPermissionChecker implements AccessControlEnforcer {
   static final Log LOG = LogFactory.getLog(UserGroupInformation.class);
 
-  /* FIXME: All these hard coded stuffs need configurations */
+  /* Add abac configurations */
   static HashMap<String, String> abacPrefixes = new HashMap<String, String>(); /// map for Abac test
-  static final String abacAttestPrincipal = "152.3.145.138:4144";
-  static final String abacServer = "10.10.1.6";
-  static final String abacProtocol = "http";
-  static final int abacPort = 7777;
-  static final String abacAccessCheckEndpoint = "/appAccessesObject";
-  static final String abacPolicyFile = "/var/lib/abac.json";
+  Configuration conf = new Configuration();
+  conf.addResource("conf/abac.xml");
+  
+  /* TODO: move config keys to DFSConfigKeys */
+  static final String abacAttestPrincipal = conf.get("dfs.abac.attest-principal");
+  static final String abacServer = conf.get("dfs.abac.server.ip");
+  static final int abacPort = conf.getInt("dfs.abac.server.port", 65535);
+  static final String abacProtocol = conf.get("dfs.abac.protocol");
+  static final String abacAccessCheckEndpoint = conf.get("dfs.abac.access.endpoint");
+  static final String abacPolicyFile = conf.get("dfs.abac.policy");
+
+  if (abacAttestPrincipal == null || abacServer == null || abacProtocol == null ||
+      abacAccessCheckEndpoint == null || abacPolicyFile == null) {
+    LOG.error("abac configuration needed but not found: " + abacAttestPrincipal + " "
+              + abacServer + " " + abacProtocol + " " + abacAccesCheckEndpoint + " "
+              + abacPolicyFile);
+  }
 
   static {
     try {
@@ -93,7 +104,7 @@ class FSPermissionChecker implements AccessControlEnforcer {
      StringBuilder sb = new StringBuilder();
      sb.append("{ \"principal\": \"");
      sb.append(abacAttestPrincipal);
-     sb.append("\", \"otherValues\": [\"");
+     sb.append("\", \"methodParams\": [\"");
      sb.append(Server.getRemoteAddress());
      sb.append(":");
      sb.append(Server.getRemotePort());
