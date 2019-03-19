@@ -43,64 +43,30 @@ import org.apache.hadoop.hdfs.server.namenode.INodeAttributeProvider.AccessContr
 import org.apache.hadoop.hdfs.util.ReadOnlyList;
 import org.apache.hadoop.security.AccessControlException;
 import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.conf.Configuration;
 
 /** 
  * Class that helps in checking file system permission.
  * The state of this class need not be synchronized as it has data structures that
  * are read-only.
  * 
- * Some of the helper methods are gaurded by {@link FSNamesystem#readLock()}.
+ * Some of the helper methods are guarded by {@link FSNamesystem#readLock()}.
  */
 class FSPermissionChecker implements AccessControlEnforcer {
   static final Log LOG = LogFactory.getLog(UserGroupInformation.class);
 
   /* Add abac configurations */
-  static HashMap<String, String> abacPrefixes = new HashMap<String, String>(); /// map for Abac test
+  HashMap<String, String> abacPrefixes = new HashMap<String, String>(); /// map for Abac test
   Configuration conf = new Configuration();
-  conf.addResource("conf/abac.xml");
   
-  /* TODO: move config keys to DFSConfigKeys */
-  static final String abacAttestPrincipal = conf.get("dfs.abac.attest-principal");
-  static final String abacServer = conf.get("dfs.abac.server.ip");
-  static final int abacPort = conf.getInt("dfs.abac.server.port", 65535);
-  static final String abacProtocol = conf.get("dfs.abac.protocol");
-  static final String abacAccessCheckEndpoint = conf.get("dfs.abac.access.endpoint");
-  static final String abacPolicyFile = conf.get("dfs.abac.policy");
+  String abacAttestPrincipal;     // abac config by key "dfs.abac.attest-principal"
+  String abacServer;              // abac config by key "dfs.abac.server.ip"
+  int abacPort;                   // abac config by key "dfs.abac.server.port"; default value 65535
+  String abacProtocol;            // abac config by key "dfs.abac.protocol"
+  String abacAccessCheckEndpoint; // abac config by key "dfs.abac.access.endpoint"
+  String abacPolicyFile;          // abac config by key "dfs.abac.policy"
 
-  if (abacAttestPrincipal == null || abacServer == null || abacProtocol == null ||
-      abacAccessCheckEndpoint == null || abacPolicyFile == null) {
-    LOG.error("abac configuration needed but not found: " + abacAttestPrincipal + " "
-              + abacServer + " " + abacProtocol + " " + abacAccesCheckEndpoint + " "
-              + abacPolicyFile);
-  }
-
-  static {
-    try {
-      /// this file should be dynamically created and checkpointed, each line represent
-      /// An abac target
-      Scanner r = new Scanner(new File(abacPolicyFile));
-      while (r.hasNextLine()) {
-        String line = r.nextLine();
-        String parts[] = line.split(" ");
-	LOG.debug("reading abac policy line " + line);
- 	if (parts.length == 1) {
-          abacPrefixes.put(parts[0], parts[0]);
-        } else {
-	  abacPrefixes.put(parts[0], parts[1]); 
-        }
-      }
-      r.close();
-    } catch (IOException e) {
-      LOG.error("IO exception occurs when processing ABAC policy file {}", e);
-    } catch (Throwable e) {
-      LOG.error("unknown error {}", e);
-    } finally {
-      LOG.info("abac: end of static initializer of fs permission ");
-    }
-
-  }
-
-  static String getAbacPayload(String accessor) {
+  String getAbacPayload(String accessor) {
      StringBuilder sb = new StringBuilder();
      sb.append("{ \"principal\": \"");
      sb.append(abacAttestPrincipal);
@@ -114,16 +80,18 @@ class FSPermissionChecker implements AccessControlEnforcer {
      return sb.toString();
   }
 
-  static boolean doAbacCheck(String pathname) {
+  boolean doAbacCheck(String pathname) {
     if (NameNodeRpcServer.shouldDoAbacCheck()) {
       String accessor = abacPrefixes.get(pathname);
       LOG.info("abac checking on path: " + pathname + ", accessor =" + accessor);
       if (accessor != null) {
         /// we don't have special char so far... So default one should work
+	// QC: It can be faster if we cache abac payload. 
         byte payload[] = getAbacPayload(accessor).getBytes();
 	LOG.info("payload of abac: " + new String(payload));
   	HttpURLConnection conn = null;
 	try {
+	  // QC: Apache HttpClient is able to easily get this done  
           conn = (HttpURLConnection) (new URL(abacProtocol, abacServer, abacPort,
 			  abacAccessCheckEndpoint).openConnection());
 	  conn.setDoOutput(true);
@@ -209,6 +177,49 @@ class FSPermissionChecker implements AccessControlEnforcer {
     user = callerUgi.getShortUserName();
     isSuper = user.equals(fsOwner) || groups.contains(supergroup);
     this.attributeProvider = attributeProvider;
+
+    // Load abac configuration source
+    conf.addResource("conf/abac.xml");
+    if (abacAttestPrincipal == null || abacServer == null || abacProtocol == null ||
+        abacAccessCheckEndpoint == null || abacPolicyFile == null) {
+      LOG.error("abac configuration needed but not found: " + abacAttestPrincipal + " "
+                + abacServer + " " + abacProtocol + " " + abacAccessCheckEndpoint + " "
+                + abacPolicyFile);
+    }
+
+    // Load abac config
+    // TODO: move config keys to DFSConfigKeys
+    abacAttestPrincipal = conf.get("dfs.abac.attest-principal");
+    abacServer = conf.get("dfs.abac.server.ip");
+    abacPort = conf.getInt("dfs.abac.server.port", 65535);
+    abacProtocol = conf.get("dfs.abac.protocol");
+    abacAccessCheckEndpoint = conf.get("dfs.abac.access.endpoint");
+    abacPolicyFile = conf.get("dfs.abac.policy");
+    
+    // Read policy file
+    try {
+      /// this file should be dynamically created and checkpointed, each line represent
+      /// An abac target
+      Scanner r = new Scanner(new File(abacPolicyFile));
+      while (r.hasNextLine()) {
+        String line = r.nextLine();
+        String parts[] = line.split(" ");
+	LOG.debug("reading abac policy line " + line);
+ 	if (parts.length == 1) {
+          abacPrefixes.put(parts[0], parts[0]);
+        } else {
+	  abacPrefixes.put(parts[0], parts[1]); 
+        }
+      }
+      r.close();
+    } catch (IOException e) {
+      LOG.error("IO exception occurs when processing ABAC policy file {}", e);
+    } catch (Throwable e) {
+      LOG.error("unknown error {}", e);
+    } finally {
+      LOG.info("abac: end of static initializer of fs permission ");
+    }
+
   }
 
   public boolean isMemberOfGroup(String group) {
