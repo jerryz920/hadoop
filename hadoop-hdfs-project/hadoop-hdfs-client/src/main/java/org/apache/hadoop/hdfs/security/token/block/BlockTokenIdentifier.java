@@ -42,6 +42,7 @@ public class BlockTokenIdentifier extends TokenIdentifier {
   private int keyId;
   private String userId;
   private String blockPoolId;
+  private String remoteAddr;
   private long blockId;
   private final EnumSet<AccessMode> modes;
 
@@ -58,6 +59,14 @@ public class BlockTokenIdentifier extends TokenIdentifier {
     this.blockPoolId = bpid;
     this.blockId = blockId;
     this.modes = modes == null ? EnumSet.noneOf(AccessMode.class) : modes;
+  }
+
+  public void setRemoteAddr(String r) {
+    remoteAddr = r;
+  }
+ 
+  public String getRemoteAddr() {
+    return remoteAddr;
   }
 
   @Override
