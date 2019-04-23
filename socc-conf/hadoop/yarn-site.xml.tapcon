@@ -22,7 +22,7 @@
  </property>
  <property>
     <name>yarn.resourcemanager.hostname</name>
-    <value>hdfs-1</value>
+    <value>hdfs-1.latte.org</value>
 </property>
  <property>
     <name>yarn.resourcemanager.bind-host</name>

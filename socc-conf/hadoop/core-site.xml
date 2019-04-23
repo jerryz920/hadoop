@@ -19,7 +19,7 @@
 <configuration>
 	<property>
 	<name>fs.default.name</name>
-	<value>hdfs://hdfs-1:9000</value>
+	<value>hdfs://hdfs-1.latte.org:9000</value>
 	<description>name of default filesystem</description>
 	</property>
 	<property>
