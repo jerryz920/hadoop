@@ -8,8 +8,11 @@ workers=`seq 2 4`;
 # exit 1;
 #fi
 
+bash allcp.sh sshconfig
+bash allrun.sh "mkdir -p .ssh; mv sshconfig .ssh/config;"
+
 for n in $master; do
-echo docker-machine ssh hdfs-$n "if test -f /opt/hadoop-2.8.0 ; then  sudo /opt/hadoop-2.8.0/sbin/stop-all.sh; fi"
+docker-machine ssh hdfs-$n "if test -d /opt/hadoop-2.8.0 ; then  /opt/hadoop-2.8.0/sbin/stop-all.sh; fi"
 done
 bash allcp.sh hadoop-dist/target/hadoop-2.8.0.tar.gz 
 bash allrun.sh "
@@ -45,17 +48,40 @@ docker-machine ssh hdfs-$n "
 ";
 done
 
+getip()
+{
+  docker-machine ssh $1 ifconfig eth0 | grep "inet addr" | awk -F: '{print $2}' | awk '{print $1}'
+}
+
+cat > hosts <<EOF
+127.0.0.1 localhost
+
+# The following lines are desirable for IPv6 capable hosts
+::1 ip6-localhost ip6-loopback
+fe00::0 ip6-localnet
+ff00::0 ip6-mcastprefix
+ff02::1 ip6-allnodes
+ff02::2 ip6-allrouters
+ff02::3 ip6-allhosts
+EOF
+
+for n in $master $workers; do
+  echo "`getip hdfs-$n` hdfs-$n hdfs-$n.latte.org" >> hosts
+done
+
+bash allcp.sh hosts
 bash allrun.sh "
+sudo mv hosts /etc/hosts
 sudo apt-get install -y software-properties-common
 sudo apt-add-repository -y ppa:webupd8team/java
+sudo apt-add-repository -y ppa:openjdk-r/ppa
 sudo apt-get update
-echo 'oracle-java8-installer shared/accepted-oracle-license-v1-1 select true' | sudo debconf-set-selections
-sudo apt-get install -y oracle-java8-installer
+sudo apt-get install -y openjdk-8-jdk
 "
 
 
 for n in $master; do
-echo docker-machine ssh hdfs-$n "hadoop namenode -format /opt/name; if test -f /opt/hadoop-2.8.0 ; then  sudo /opt/hadoop-2.8.0/sbin/start-all.sh; fi"
+docker-machine ssh hdfs-$n "hadoop namenode -format /opt/name -force; if test -d /opt/hadoop-2.8.0 ; then  /opt/hadoop-2.8.0/sbin/start-all.sh; fi"
 done
 bash allcp.sh bashrc
 bash allrun.sh mv bashrc .bashrc
