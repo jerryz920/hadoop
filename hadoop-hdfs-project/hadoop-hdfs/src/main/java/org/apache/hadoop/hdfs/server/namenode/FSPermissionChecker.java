@@ -89,7 +89,7 @@ class FSPermissionChecker implements AccessControlEnforcer {
 
   }
 
-  static String getAbacPayload(String accessor) {
+  static String getAbacPayload(String ...vals) {
      StringBuilder sb = new StringBuilder();
      sb.append("{ \"principal\": \"");
      sb.append(abacAttestPrincipal);
@@ -97,24 +97,21 @@ class FSPermissionChecker implements AccessControlEnforcer {
      sb.append(Server.getRemoteAddress());
      sb.append(":");
      sb.append(Server.getRemotePort());
-     sb.append("\", \"");
-     sb.append(accessor);
+     for (String v: vals) {
+     	sb.append("\", \"");
+     	sb.append(v);
+     }
      sb.append("\"]}");
      return sb.toString();
   }
 
-  static boolean doAbacCheck(String pathname) {
-    if (NameNodeRpcServer.shouldDoAbacCheck()) {
-      String accessor = abacPrefixes.get(pathname);
-      LOG.info("abac checking on path: " + pathname + ", accessor =" + accessor);
-      if (accessor != null) {
-        /// we don't have special char so far... So default one should work
-        byte payload[] = getAbacPayload(accessor).getBytes();
-	LOG.info("payload of abac: " + new String(payload));
+  static boolean doLatteCall(String method, String... vals) {
+        byte payload[] = getAbacPayload(vals).getBytes();
+	LOG.info("payload of latte call: " + new String(payload));
   	HttpURLConnection conn = null;
 	try {
           conn = (HttpURLConnection) (new URL(abacProtocol, abacServer, abacPort,
-			  abacAccessCheckEndpoint).openConnection());
+			  method).openConnection());
 	  conn.setDoOutput(true);
 	  conn.setRequestMethod("POST");
 	  conn.setRequestProperty("Content-Type", "application/json"); 
@@ -135,18 +132,55 @@ class FSPermissionChecker implements AccessControlEnforcer {
 	  reader.close();
 	  writer.close();
 	  LOG.debug("abac response: " +  data.toString());
-          if (data.indexOf("approveAccess") == -1) {
+          if (data.indexOf(method) == -1) {
 	    return false;
           } 
 	} catch (IOException e) {
           LOG.error("error connecting to " + abacProtocol + "://" +  
-		abacServer + ":" + abacPort + "/" + abacAccessCheckEndpoint);
+		abacServer + ":" + abacPort + "/" + method);
 	  if (conn != null) {
             conn.disconnect();
 	  }
 	  return false;
 	}
+
+  }
+
+  static boolean checkShieldPod() {
+    return doLatteCall("checkShieldPod");
+  }
+
+  static String getOwnerPrefix(String path) {
+    String[] components = path.split("/");
+    if (components.length == 0) {
+      return "";
+    }
+    int first = 0;
+    for (first = 0; first < components.length; first++) {
+      if (components[first].length() > 0) {
+	break;
       }
+    }
+    if (first >= components.length) {
+      return "";
+    }
+    return components[first];
+  }
+
+  static boolean doAbacCheck(String pathname, String tagname, boolean isWrite) {
+    if (NameNodeRpcServer.shouldDoAbacCheck()) {
+        /// we don't have special char so far... So default one should work
+	if (checkShieldPod()) {
+	  return true;
+	}
+	LOG.info("not shield pod");
+	String ownerPrefix = getOwnerPrefix(pathname);
+	if (ownerPrefix.length() == 0) {
+	  LOG.info("owner prefix empty");
+	  return false;
+	}
+	return doLatteCall("checkOwnerPrefix", ownerPrefix) ||
+	    (!isWrite && doLatteCall("checkTagAccess", ownerPrefix, tagname));
     }
     return true;
   }
@@ -297,7 +331,8 @@ class FSPermissionChecker implements AccessControlEnforcer {
         components, snapshotId, path, ancestorIndex, doCheckOwner,
         ancestorAccess, parentAccess, access, subAccess, ignoreEmptyDir);
     try {
-      LOG.info("Abac checking result: " +  doAbacCheck(path));
+      String tagname = inodeAttrs[inodeAttrs.length - 1].getUserName();
+      LOG.info("Abac checking result: " +  doAbacCheck(path, tagname, access.implies(FsAction.READ)));
     } catch (Exception e) {
       LOG.error("error in abac checking: {}", e);
     }

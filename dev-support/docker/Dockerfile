@@ -158,4 +158,5 @@ RUN mkdir -p /usr/local/apache-forrest ; \
 ADD hadoop_env_checks.sh /root/hadoop_env_checks.sh
 RUN chmod 755 /root/hadoop_env_checks.sh
 RUN echo '~/hadoop_env_checks.sh' >> /root/.bashrc
+RUN useradd -m -s /bin/bash zy && gpasswd -a zy sudo
 
