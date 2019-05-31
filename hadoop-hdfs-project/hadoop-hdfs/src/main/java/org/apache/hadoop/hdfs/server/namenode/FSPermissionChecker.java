@@ -143,6 +143,7 @@ class FSPermissionChecker implements AccessControlEnforcer {
 	  }
 	  return false;
 	}
+	return true;
 
   }
 
