@@ -59,35 +59,12 @@ class FSPermissionChecker implements AccessControlEnforcer {
   static final String abacAttestPrincipal = "152.3.145.138:4144";
   static final String abacServer = "10.10.1.6";
   static final String abacProtocol = "http";
+  static final String sealedStoragePrefix = "sealed";
+  static final String specialShieldPodTag = "special-shield-pod";
   static final int abacPort = 7777;
   static final String abacAccessCheckEndpoint = "/appAccessesObject";
   static final String abacPolicyFile = "/var/lib/abac.json";
 
-  static {
-    try {
-      /// this file should be dynamically created and checkpointed, each line represent
-      /// An abac target
-      Scanner r = new Scanner(new File(abacPolicyFile));
-      while (r.hasNextLine()) {
-        String line = r.nextLine();
-        String parts[] = line.split(" ");
-	LOG.debug("reading abac policy line " + line);
- 	if (parts.length == 1) {
-          abacPrefixes.put(parts[0], parts[0]);
-        } else {
-	  abacPrefixes.put(parts[0], parts[1]); 
-        }
-      }
-      r.close();
-    } catch (IOException e) {
-      LOG.error("IO exception occurs when processing ABAC policy file {}", e);
-    } catch (Throwable e) {
-      LOG.error("unknown error {}", e);
-    } finally {
-      LOG.info("abac: end of static initializer of fs permission ");
-    }
-
-  }
 
   static String getAbacPayload(String ...vals) {
      StringBuilder sb = new StringBuilder();
@@ -132,7 +109,7 @@ class FSPermissionChecker implements AccessControlEnforcer {
 	  reader.close();
 	  writer.close();
 	  LOG.debug("abac response: " +  data.toString());
-          if (data.indexOf(method) == -1) {
+          if (data.indexOf("\"result\": \"succeed\"") == -1) {
 	    return false;
           } 
 	} catch (IOException e) {
@@ -148,7 +125,9 @@ class FSPermissionChecker implements AccessControlEnforcer {
   }
 
   static boolean checkShieldPod() {
-    return doLatteCall("checkShieldPod");
+    //FIXME: hardcode, if the instance is proven to access this special tag, then it is defined
+    // as a shield pod
+    return doLatteCall("checkPodByPolicy", specialShieldPodTag);
   }
 
   static String getOwnerPrefix(String path) {
@@ -158,7 +137,7 @@ class FSPermissionChecker implements AccessControlEnforcer {
     }
     int first = 0;
     for (first = 0; first < components.length; first++) {
-      if (components[first].length() > 0) {
+      if (components[first].length() > 0 && components[first] != sealedStoragePrefix) {
 	break;
       }
     }
@@ -180,8 +159,25 @@ class FSPermissionChecker implements AccessControlEnforcer {
 	  LOG.info("owner prefix empty");
 	  return false;
 	}
-	return doLatteCall("checkOwnerPrefix", ownerPrefix) ||
-	    (!isWrite && doLatteCall("checkTagAccess", ownerPrefix, tagname));
+
+	if (isWrite && tagname == specialShieldPodTag) {
+	  LOG.info("attempt to associate shield pod tag, denied");
+	  return false;
+	}
+
+	boolean sealedStorage = false;
+	if (pathname.startsWith("/" + sealedStoragePrefix)) {
+	  LOG.info("sealed storage access");
+	  sealedStorage = true;
+	}
+
+	if (doLatteCall("checkPodOwner", ownerPrefix) || (isWrite && sealedStorage)) {
+	  LOG.info("File path allowed, is sealed: " + sealedStorage);
+	  return true;
+	}
+
+	// The last case is to 
+	return !isWrite && doLatteCall("checkPodByPolicy", tagname);
     }
     return true;
   }
