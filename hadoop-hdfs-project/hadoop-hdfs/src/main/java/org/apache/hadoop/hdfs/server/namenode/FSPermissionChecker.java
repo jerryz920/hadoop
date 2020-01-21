@@ -56,20 +56,18 @@ class FSPermissionChecker implements AccessControlEnforcer {
 
   /* FIXME: All these hard coded stuffs need configurations */
   static HashMap<String, String> abacPrefixes = new HashMap<String, String>(); /// map for Abac test
-  static final String abacAttestPrincipal = "152.3.145.138:4144";
   static final String abacServer = "10.10.1.6";
   static final String abacProtocol = "http";
   static final String sealedStoragePrefix = "sealed";
   static final String specialShieldPodTag = "special-shield-pod";
-  static final int abacPort = 7777;
-  static final String abacAccessCheckEndpoint = "/appAccessesObject";
-  static final String abacPolicyFile = "/var/lib/abac.json";
+  static final int abacPort = 19851;
+  static final String LatteHdfsSealedTag = "latte.hdfs.tag";
 
 
-  static String getAbacPayload(String ...vals) {
+  static String getAbacPayload(String principal, String ...vals) {
      StringBuilder sb = new StringBuilder();
      sb.append("{ \"principal\": \"");
-     sb.append(abacAttestPrincipal);
+     sb.append(principal);
      sb.append("\", \"otherValues\": [\"");
      sb.append(Server.getRemoteAddress());
      sb.append(":");
@@ -82,8 +80,8 @@ class FSPermissionChecker implements AccessControlEnforcer {
      return sb.toString();
   }
 
-  static boolean doLatteCall(String method, String... vals) {
-        byte payload[] = getAbacPayload(vals).getBytes();
+  static boolean doLatteCall(String method, String principal, String... vals) {
+        byte payload[] = getAbacPayload(principal, vals).getBytes();
 	LOG.info("payload of latte call: " + new String(payload));
   	HttpURLConnection conn = null;
 	try {
@@ -127,7 +125,7 @@ class FSPermissionChecker implements AccessControlEnforcer {
   static boolean checkShieldPod() {
     //FIXME: hardcode, if the instance is proven to access this special tag, then it is defined
     // as a shield pod
-    return doLatteCall("checkPodByPolicy", specialShieldPodTag);
+    return doLatteCall("checkPodByPolicy", "", specialShieldPodTag);
   }
 
   static String getOwnerPrefix(String path) {
@@ -147,7 +145,26 @@ class FSPermissionChecker implements AccessControlEnforcer {
     return components[first];
   }
 
-  static boolean doAbacCheck(String pathname, String tagname, boolean isWrite) {
+  static boolean checkTagAccess(String tagnames) {
+    // tagnames = pubkey:tagId;pubkey:tagId
+    String[] tags = tagnames.split(";");
+    for (String tag: tags) {
+      String[] parts = tag.split(":");
+      if (parts.length != 2) {
+	LOG.info("Malformed tag names: " + tagnames);
+	return false;
+      }
+      // parts[0] == user public key
+      // parts[1] == tag ID
+      if (!doLatteCall("checkPodByPolicy", parts[0], parts[1])) {
+	LOG.info("Tag access check failed on tag: " + tag + ", full tag: " + tagnames);
+	return false;
+      }
+    }
+    return true;
+  }
+
+  static boolean doAbacCheck(String pathname, String tagnames, boolean isWrite) {
     if (NameNodeRpcServer.shouldDoAbacCheck()) {
         /// we don't have special char so far... So default one should work
 	if (checkShieldPod()) {
@@ -160,7 +177,7 @@ class FSPermissionChecker implements AccessControlEnforcer {
 	  return false;
 	}
 
-	if (isWrite && tagname == specialShieldPodTag) {
+	if (isWrite && tagnames == specialShieldPodTag) {
 	  LOG.info("attempt to associate shield pod tag, denied");
 	  return false;
 	}
@@ -171,13 +188,15 @@ class FSPermissionChecker implements AccessControlEnforcer {
 	  sealedStorage = true;
 	}
 
-	if (doLatteCall("checkPodOwner", ownerPrefix) || (isWrite && sealedStorage)) {
+	if (!sealedStorage && doLatteCall("checkPodOwner", "", ownerPrefix)) {
+	  LOG.info("File path allowed");
+	  return true;
+	} else if (isWrite && sealedStorage && doLatteCall("checkPodLabel", "", LatteHdfsSealedTag, tagnames)) {
 	  LOG.info("File path allowed, is sealed: " + sealedStorage);
 	  return true;
 	}
 
-	// The last case is to 
-	return !isWrite && doLatteCall("checkPodByPolicy", tagname);
+	return !isWrite && checkTagAccess(tagnames);
     }
     return true;
   }
