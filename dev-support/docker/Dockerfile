@@ -19,7 +19,7 @@
 # See BUILDING.txt.
 
 
-FROM ubuntu:trusty
+FROM ubuntu:xenial
 
 WORKDIR /root
 
@@ -52,7 +52,6 @@ RUN apt-get -q update && apt-get -q install --no-install-recommends -y \
     libsnappy-dev \
     libssl-dev \
     libtool \
-    openjdk-7-jdk \
     pinentry-curses \
     pkg-config \
     protobuf-compiler \
@@ -64,9 +63,6 @@ RUN apt-get -q update && apt-get -q install --no-install-recommends -y \
     snappy \
     zlib1g-dev
 
-# Fixing the Apache commons / Maven dependency problem under Ubuntu:
-# See http://wiki.apache.org/commons/VfsProblems
-RUN cd /usr/share/maven/lib && ln -s ../../java/commons-lang.jar .
 
 #######
 # Oracle Java
@@ -79,6 +75,7 @@ RUN apt-get -q install --no-install-recommends -y software-properties-common
 #RUN add-apt-repository -y ppa:webupd8team/java
 RUN add-apt-repository -y ppa:openjdk-r/ppa
 RUN apt-get -q update
+RUN apt-get install -y sudo
 
 # Auto-accept the Oracle JDK license
 #RUN echo oracle-java7-installer shared/accepted-oracle-license-v1-1 select true | sudo /usr/bin/debconf-set-selections
@@ -102,13 +99,7 @@ ENV FINDBUGS_HOME /opt/findbugs
 ####
 # Install shellcheck
 ####
-RUN apt-get -q install -y cabal-install
-RUN mkdir /root/.cabal
-RUN echo "remote-repo: hackage.fpcomplete.com:http://hackage.fpcomplete.com/" >> /root/.cabal/config
-#RUN echo "remote-repo: hackage.haskell.org:http://hackage.haskell.org/" > /root/.cabal/config
-RUN echo "remote-repo-cache: /root/.cabal/packages" >> /root/.cabal/config
-RUN cabal update
-RUN cabal install shellcheck --global
+RUN apt-get install -y shellcheck
 
 ####
 # Install bats
@@ -128,7 +119,10 @@ RUN wget https://pypi.python.org/packages/d0/fa/251113165747809c5d515836897962cb
 	python setup.py install
 
 
+RUN apt-get install -y python-setuptools python3-setuptools
 RUN pip install pylint
+
+
 
 ####
 # Install dateutil.parser
@@ -158,5 +152,4 @@ RUN mkdir -p /usr/local/apache-forrest ; \
 ADD hadoop_env_checks.sh /root/hadoop_env_checks.sh
 RUN chmod 755 /root/hadoop_env_checks.sh
 RUN echo '~/hadoop_env_checks.sh' >> /root/.bashrc
-RUN useradd -m -s /bin/bash zy && gpasswd -a zy sudo
 
