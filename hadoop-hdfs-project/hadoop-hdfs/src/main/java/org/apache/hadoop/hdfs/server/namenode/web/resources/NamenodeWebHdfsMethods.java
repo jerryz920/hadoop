@@ -538,10 +538,13 @@ public class NamenodeWebHdfsMethods {
     switch(op.getValue()) {
     case CREATE:
     {
+      Exception e = new NullPointerException();
+      LOG.info("calling here, ugi=" + ugi.getUserName(), e);
       final URI uri = redirectURI(namenode, ugi, delegation, username,
           doAsUser, fullpath, op.getValue(), -1L, blockSize.getValue(conf),
           exclDatanodes.getValue(), permission, overwrite, bufferSize,
           replication, blockSize, createParent, createFlagParam);
+      LOG.info("after the call what is it?");
       return Response.temporaryRedirect(uri).type(MediaType.APPLICATION_OCTET_STREAM).build();
     } 
     case MKDIRS:

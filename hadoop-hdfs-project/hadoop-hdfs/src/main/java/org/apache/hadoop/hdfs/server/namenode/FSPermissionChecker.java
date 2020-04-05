@@ -346,8 +346,14 @@ class FSPermissionChecker implements AccessControlEnforcer {
     enforcer.checkPermission(fsOwner, supergroup, callerUgi, inodeAttrs, inodes,
         components, snapshotId, path, ancestorIndex, doCheckOwner,
         ancestorAccess, parentAccess, access, subAccess, ignoreEmptyDir);
+
+    // Only the final write needs to do ABAC check. So if access is null, skip it.
+    if (access == null) {
+      return ;
+    }
+
     try {
-      String tagname = inodeAttrs[inodeAttrs.length - 1].getUserName();
+      String tagname = callerUgi.getUserName();
       LOG.info("Abac checking result: " +  doAbacCheck(path, tagname, access.implies(FsAction.READ)));
     } catch (Exception e) {
       LOG.error("error in abac checking: {}", e);
