@@ -125,7 +125,7 @@ class FSPermissionChecker implements AccessControlEnforcer {
   static boolean checkShieldPod() {
     //FIXME: hardcode, if the instance is proven to access this special tag, then it is defined
     // as a shield pod
-    return doLatteCall("checkPodByPolicy", "", specialShieldPodTag);
+    return doLatteCall("checkPodAttestation", "", specialShieldPodTag);
   }
 
   static String getOwnerPrefix(String path) {
@@ -155,8 +155,8 @@ class FSPermissionChecker implements AccessControlEnforcer {
 	return false;
       }
       // parts[0] == user public key
-      // parts[1] == tag ID
-      if (!doLatteCall("checkPodByPolicy", parts[0], parts[1])) {
+      // parts[1] == tag ID (Policy ID)
+      if (!doLatteCall("checkPodAttestation", parts[0], parts[1])) {
 	LOG.info("Tag access check failed on tag: " + tag + ", full tag: " + tagnames);
 	return false;
       }
